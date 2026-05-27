@@ -24,7 +24,7 @@ if not BOT_TOKEN:
     sys.exit(1)
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
-DEFAULT_OWNER_IDS = [625004459491065856]
+DEFAULT_OWNER_IDS = [1279358145151373352]
 DEFAULT_PREFIX = "+"
 
 DATA_DIR = os.environ.get("DATA_DIR")
