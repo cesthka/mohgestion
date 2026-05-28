@@ -24,7 +24,7 @@ if not BOT_TOKEN:
     sys.exit(1)
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
-DEFAULT_OWNER_IDS = [1279358145151373352]
+DEFAULT_OWNER_IDS = [625004459491065856, 142365250803466240]  # ← Remplace par TON ID Discord
 DEFAULT_PREFIX = "+"
 
 DATA_DIR = os.environ.get("DATA_DIR")
@@ -976,7 +976,7 @@ async def _warns(ctx, member: discord.Member = None):
     await ctx.send(embed=em)
 
 
-@bot.command(name="delwarn")
+@bot.command(name="delwarn", aliases=["unwarn"])
 async def _delwarn(ctx, warn_id: int = None):
     if await check_ban(ctx):
         return
@@ -1548,6 +1548,418 @@ async def _prefix(ctx, new_prefix: str = None):
     await ctx.send(embed=success_embed("✅ Prefix modifié", f"Nouveau prefix : `{new_prefix}`"))
 
 
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║          PARTIE 5 — INFOS + RÔLES + MODÉRATION+ + OUTILS                 ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# ---- Snipe cache (dernier message supprimé par salon) ----
+_snipe_cache = {}
+
+
+@bot.listen("on_message_delete")
+async def _snipe_tracker(message):
+    if not message.guild or message.author.bot:
+        return
+    if not message.content:
+        return
+    _snipe_cache[message.channel.id] = {
+        "content": message.content,
+        "author": str(message.author),
+        "author_id": message.author.id,
+        "avatar": message.author.display_avatar.url,
+        "time": datetime.now(timezone.utc),
+    }
+
+
+# ========================= INFOS =========================
+
+@bot.command(name="userinfo", aliases=["ui", "whois"])
+async def _userinfo(ctx, member: discord.Member = None):
+    if await check_ban(ctx):
+        return
+    member = member or ctx.author
+    created = int(member.created_at.timestamp())
+    joined = int(member.joined_at.timestamp()) if member.joined_at else None
+    roles = [r.mention for r in reversed(member.roles) if r != ctx.guild.default_role]
+    moh_rank = rank_name(get_rank_db(member.id))
+
+    em = discord.Embed(title=f"👤 {member}", color=member.color if member.color.value else COLOR_DEFAULT)
+    em.set_thumbnail(url=member.display_avatar.url)
+    em.add_field(name="ID", value=f"`{member.id}`", inline=True)
+    em.add_field(name="Surnom", value=member.nick or "*aucun*", inline=True)
+    em.add_field(name="Bot ?", value="Oui" if member.bot else "Non", inline=True)
+    em.add_field(name="Compte créé", value=f"<t:{created}:R>", inline=True)
+    if joined:
+        em.add_field(name="A rejoint", value=f"<t:{joined}:R>", inline=True)
+    em.add_field(name="Rang Moh", value=moh_rank, inline=True)
+    em.add_field(name=f"Rôles ({len(roles)})",
+                 value=", ".join(roles[:20]) if roles else "*aucun*", inline=False)
+    em.set_footer(text=FOOTER_TEXT)
+    await ctx.send(embed=em)
+
+
+@bot.command(name="serverinfo", aliases=["si"])
+async def _serverinfo(ctx):
+    if await check_ban(ctx):
+        return
+    g = ctx.guild
+    created = int(g.created_at.timestamp())
+    bots = sum(1 for m in g.members if m.bot)
+    humans = g.member_count - bots
+    em = discord.Embed(title=f"🏠 {g.name}", color=COLOR_DEFAULT)
+    if g.icon:
+        em.set_thumbnail(url=g.icon.url)
+    em.add_field(name="ID", value=f"`{g.id}`", inline=True)
+    em.add_field(name="Propriétaire", value=f"<@{g.owner_id}>", inline=True)
+    em.add_field(name="Créé", value=f"<t:{created}:R>", inline=True)
+    em.add_field(name="Membres", value=f"{g.member_count} ({humans} 👤 / {bots} 🤖)", inline=True)
+    em.add_field(name="Salons", value=f"{len(g.text_channels)} 💬 / {len(g.voice_channels)} 🔊", inline=True)
+    em.add_field(name="Rôles", value=str(len(g.roles)), inline=True)
+    em.add_field(name="Boosts", value=f"{g.premium_subscription_count} (niveau {g.premium_tier})", inline=True)
+    em.add_field(name="Émojis", value=str(len(g.emojis)), inline=True)
+    em.set_footer(text=FOOTER_TEXT)
+    await ctx.send(embed=em)
+
+
+@bot.command(name="avatar", aliases=["av", "pdp"])
+async def _avatar(ctx, member: discord.Member = None):
+    if await check_ban(ctx):
+        return
+    member = member or ctx.author
+    em = discord.Embed(title=f"🖼️ Avatar de {member.display_name}", color=COLOR_DEFAULT)
+    em.set_image(url=member.display_avatar.url)
+    em.description = f"[Lien direct]({member.display_avatar.url})"
+    em.set_footer(text=FOOTER_TEXT)
+    await ctx.send(embed=em)
+
+
+@bot.command(name="ping")
+async def _ping(ctx):
+    if await check_ban(ctx):
+        return
+    latency = round(bot.latency * 1000)
+    em = success_embed("🏓 Pong !", f"Latence WebSocket : **{latency} ms**")
+    await ctx.send(embed=em)
+
+
+@bot.command(name="roleinfo", aliases=["ri"])
+async def _roleinfo(ctx, *, role_input: str = None):
+    if await check_ban(ctx):
+        return
+    if not role_input:
+        return await ctx.send(embed=error_embed("Usage", "`+roleinfo @rôle`"))
+    try:
+        role = await commands.RoleConverter().convert(ctx, role_input)
+    except commands.CommandError:
+        return await ctx.send(embed=error_embed("❌", "Rôle introuvable."))
+    created = int(role.created_at.timestamp())
+    em = discord.Embed(title=f"🎭 {role.name}", color=role.color if role.color.value else COLOR_DEFAULT)
+    em.add_field(name="ID", value=f"`{role.id}`", inline=True)
+    em.add_field(name="Membres", value=str(len(role.members)), inline=True)
+    em.add_field(name="Couleur", value=str(role.color), inline=True)
+    em.add_field(name="Position", value=str(role.position), inline=True)
+    em.add_field(name="Mentionnable", value="Oui" if role.mentionable else "Non", inline=True)
+    em.add_field(name="Affiché séparément", value="Oui" if role.hoist else "Non", inline=True)
+    em.add_field(name="Créé", value=f"<t:{created}:R>", inline=False)
+    em.set_footer(text=FOOTER_TEXT)
+    await ctx.send(embed=em)
+
+
+# ========================= RÔLES =========================
+
+@bot.command(name="role")
+async def _role(ctx, member: discord.Member = None, *, role_input: str = None):
+    """+role @user @rôle — ajoute le rôle s'il ne l'a pas, le retire sinon."""
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not member or not role_input:
+        return await ctx.send(embed=error_embed("Usage", "`+role @user @rôle`"))
+    try:
+        role = await commands.RoleConverter().convert(ctx, role_input)
+    except commands.CommandError:
+        return await ctx.send(embed=error_embed("❌", "Rôle introuvable."))
+    if role >= ctx.guild.me.top_role:
+        return await ctx.send(embed=error_embed("❌", "Ce rôle est au-dessus du mien, je peux pas le gérer."))
+    if role >= ctx.author.top_role and not has_min_rank(ctx.author.id, 3):
+        return await ctx.send(embed=error_embed("❌", "Ce rôle est au-dessus ou égal au tien."))
+    if role.is_default() or role.is_premium_subscriber() or role.is_bot_managed():
+        return await ctx.send(embed=error_embed("❌", "Ce rôle ne peut pas être attribué manuellement."))
+
+    try:
+        if role in member.roles:
+            await member.remove_roles(role, reason=f"[{ctx.author}] role toggle")
+            await ctx.send(embed=success_embed("➖ Rôle retiré", f"{role.mention} retiré à {member.mention}."))
+        else:
+            await member.add_roles(role, reason=f"[{ctx.author}] role toggle")
+            await ctx.send(embed=success_embed("➕ Rôle ajouté", f"{role.mention} ajouté à {member.mention}."))
+    except discord.Forbidden:
+        await ctx.send(embed=error_embed("❌", "Permission insuffisante."))
+
+
+@bot.command(name="nick", aliases=["setnick"])
+async def _nick(ctx, member: discord.Member = None, *, nickname: str = None):
+    """+nick @user [pseudo] — vide = reset le pseudo."""
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not member:
+        return await ctx.send(embed=error_embed("Usage", "`+nick @user [pseudo]` (vide = reset)"))
+    if member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send(embed=error_embed("❌", "Ce membre est au-dessus de moi."))
+    if nickname and len(nickname) > 32:
+        return await ctx.send(embed=error_embed("❌", "Pseudo max 32 caractères."))
+    try:
+        await member.edit(nick=nickname, reason=f"[{ctx.author}] nick")
+    except discord.Forbidden:
+        return await ctx.send(embed=error_embed("❌", "Permission insuffisante."))
+    if nickname:
+        await ctx.send(embed=success_embed("✏️ Pseudo changé", f"{member.mention} → **{nickname}**"))
+    else:
+        await ctx.send(embed=success_embed("✏️ Pseudo réinitialisé", f"{member.mention}"))
+
+
+@bot.command(name="derank")
+async def _derank(ctx, member: discord.Member = None):
+    """+derank @user — retire tous les rôles gérables d'un membre."""
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not member:
+        return await ctx.send(embed=error_embed("Usage", "`+derank @user`"))
+    if member.top_role >= ctx.author.top_role and not has_min_rank(ctx.author.id, 3):
+        return await ctx.send(embed=error_embed("❌", "Ce membre a un rôle égal ou supérieur au tien."))
+    to_remove = [r for r in member.roles
+                 if r != ctx.guild.default_role and r < ctx.guild.me.top_role and not r.is_bot_managed()]
+    if not to_remove:
+        return await ctx.send(embed=error_embed("❌", "Aucun rôle gérable à retirer."))
+    try:
+        await member.remove_roles(*to_remove, reason=f"[{ctx.author}] derank")
+    except discord.Forbidden:
+        return await ctx.send(embed=error_embed("❌", "Permission insuffisante."))
+    await ctx.send(embed=success_embed("🧹 Derank", f"**{len(to_remove)}** rôle(s) retiré(s) à {member.mention}."))
+    await send_log(ctx.guild, "roles", "🧹 Derank",
+                   author=ctx.author, target=member,
+                   desc=f"**{len(to_remove)}** rôles retirés",
+                   color=COLOR_WARNING)
+
+
+# ========================= MODÉRATION+ =========================
+
+@bot.command(name="softban")
+async def _softban(ctx, member: discord.Member = None, *, reason: str = "Aucune raison fournie"):
+    """+softban @user [raison] — ban puis unban pour nettoyer les messages."""
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not member:
+        return await ctx.send(embed=error_embed("Usage", "`+softban @user [raison]`"))
+    if member.id == ctx.author.id:
+        return await ctx.send(embed=error_embed("❌", "Pas sur toi-même."))
+    if member.top_role >= ctx.author.top_role and not has_min_rank(ctx.author.id, 3):
+        return await ctx.send(embed=error_embed("❌", "Rôle égal ou supérieur."))
+    try:
+        await member.send(embed=warning_embed(
+            f"🧹 Softban sur {ctx.guild.name}",
+            f"**Modérateur :** {ctx.author}\n**Raison :** {reason}\n"
+            f"*Tu peux revenir, tes messages récents ont été supprimés.*"
+        ))
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    try:
+        await ctx.guild.ban(member, reason=f"[{ctx.author}] softban: {reason}", delete_message_days=1)
+        await ctx.guild.unban(discord.Object(id=member.id), reason="softban (auto-unban)")
+    except discord.Forbidden:
+        return await ctx.send(embed=error_embed("❌", "Permission insuffisante."))
+    sid = add_sanction(ctx.guild.id, member.id, ctx.author.id, "softban", reason)
+    await ctx.send(embed=mod_embed("Softban", member, member.id, ctx.author, reason, case_id=sid))
+    await send_log(ctx.guild, "moderation", "🧹 Softban",
+                   author=ctx.author, target=member,
+                   desc=f"**Raison :** {reason}\n**Sanction :** `#{sid}`",
+                   color=COLOR_WARNING)
+
+
+@bot.command(name="clearwarns")
+async def _clearwarns(ctx, member: discord.Member = None):
+    """+clearwarns @user — retire tous les warns actifs d'un membre."""
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not member:
+        return await ctx.send(embed=error_embed("Usage", "`+clearwarns @user`"))
+    conn = get_db()
+    cur = conn.execute(
+        "UPDATE sanctions SET active = 0 WHERE guild_id = ? AND user_id = ? AND type = 'warn' AND active = 1",
+        (str(ctx.guild.id), str(member.id))
+    )
+    count = cur.rowcount
+    conn.commit()
+    conn.close()
+    if count:
+        await ctx.send(embed=success_embed("✅ Warns effacés", f"**{count}** warn(s) retiré(s) à {member.mention}."))
+        await send_log(ctx.guild, "moderation", "🗑️ Warns effacés",
+                       author=ctx.author, target=member,
+                       desc=f"**{count}** warns retirés", color=COLOR_SUCCESS)
+    else:
+        await ctx.send(embed=error_embed("❌", f"{member.mention} n'a aucun warn actif."))
+
+
+@bot.command(name="banlist", aliases=["bans"])
+async def _banlist(ctx):
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    try:
+        entries = [entry async for entry in ctx.guild.bans(limit=100)]
+    except discord.Forbidden:
+        return await ctx.send(embed=error_embed("❌", "Permission **Bannir des membres** requise."))
+    if not entries:
+        return await ctx.send(embed=info_embed("🔨 Bannis", "Aucun membre banni."))
+    lines = []
+    for e in entries[:50]:
+        reason = (e.reason or "sans raison")[:60]
+        lines.append(f"• **{e.user}** (`{e.user.id}`) — *{reason}*")
+    em = info_embed(f"🔨 Bannis ({len(entries)})", "\n".join(lines))
+    if len(entries) > 50:
+        em.set_footer(text=f"{FOOTER_TEXT} ・ 50 premiers affichés")
+    await ctx.send(embed=em)
+
+
+@bot.command(name="snipe")
+async def _snipe(ctx):
+    """+snipe — réaffiche le dernier message supprimé du salon."""
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    data = _snipe_cache.get(ctx.channel.id)
+    if not data:
+        return await ctx.send(embed=info_embed("🔍 Snipe", "Aucun message supprimé récemment ici."))
+    ts = int(data["time"].timestamp())
+    em = discord.Embed(description=data["content"][:4000], color=COLOR_DEFAULT)
+    em.set_author(name=data["author"], icon_url=data["avatar"])
+    em.add_field(name="Supprimé", value=f"<t:{ts}:R>", inline=True)
+    em.set_footer(text=FOOTER_TEXT)
+    await ctx.send(embed=em)
+
+
+# ========================= OUTILS =========================
+
+@bot.command(name="say")
+async def _say(ctx, *, message: str = None):
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not message:
+        return await ctx.send(embed=error_embed("Usage", "`+say <message>`"))
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
+    await ctx.send(message, allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True))
+
+
+@bot.command(name="dm")
+async def _dm(ctx, member: discord.Member = None, *, message: str = None):
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not member or not message:
+        return await ctx.send(embed=error_embed("Usage", "`+dm @user <message>`"))
+    em = discord.Embed(
+        title=f"📨 Message de {ctx.guild.name}",
+        description=message[:4000],
+        color=COLOR_INFO,
+    )
+    em.set_footer(text=FOOTER_TEXT)
+    try:
+        await member.send(embed=em)
+        await ctx.send(embed=success_embed("✅ MP envoyé", f"À {member.mention}."))
+    except (discord.Forbidden, discord.HTTPException):
+        await ctx.send(embed=error_embed("❌", "Impossible d'envoyer le MP (DM fermés ?)."))
+
+
+@bot.command(name="embed")
+async def _embed(ctx, *, message: str = None):
+    """+embed <message> — envoie le texte dans un embed."""
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not message:
+        return await ctx.send(embed=error_embed("Usage", "`+embed <message>`"))
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
+    em = discord.Embed(description=message[:4000], color=COLOR_DEFAULT)
+    em.set_footer(text=FOOTER_TEXT)
+    await ctx.send(embed=em)
+
+
+@bot.command(name="addemoji", aliases=["addemote"])
+async def _addemoji(ctx, name: str = None, *, source: str = None):
+    """+addemoji <nom> <url|emoji> — ou joins une image en pièce jointe."""
+    if await check_ban(ctx):
+        return
+    if not has_min_rank(ctx.author.id, 2):
+        return await ctx.send(embed=error_embed("❌", "**Sys+** requis."))
+    if not name:
+        return await ctx.send(embed=error_embed("Usage", "`+addemoji <nom> <url|emoji>` ou joins une image."))
+    name = name.strip(":")
+    if len(name) < 2 or len(name) > 32:
+        return await ctx.send(embed=error_embed("❌", "Nom entre 2 et 32 caractères."))
+
+    image_bytes = None
+    # 1. Pièce jointe
+    if ctx.message.attachments:
+        try:
+            image_bytes = await ctx.message.attachments[0].read()
+        except discord.HTTPException:
+            pass
+    # 2. Emoji custom passé en argument <:nom:id>
+    if image_bytes is None and source:
+        custom = re.match(r"<a?:\w+:(\d+)>", source.strip())
+        url = None
+        if custom:
+            eid = custom.group(1)
+            anim = source.strip().startswith("<a:")
+            ext = "gif" if anim else "png"
+            url = f"https://cdn.discordapp.com/emojis/{eid}.{ext}"
+        elif source.strip().startswith("http"):
+            url = source.strip()
+        if url:
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            image_bytes = await resp.read()
+            except Exception as e:
+                log.warning(f"addemoji fetch: {e}")
+
+    if image_bytes is None:
+        return await ctx.send(embed=error_embed("❌", "Fournis une image (pièce jointe, URL, ou emoji custom)."))
+
+    try:
+        emoji = await ctx.guild.create_custom_emoji(
+            name=name, image=image_bytes, reason=f"[{ctx.author}] addemoji"
+        )
+    except discord.Forbidden:
+        return await ctx.send(embed=error_embed("❌", "Permission **Gérer les émojis** requise."))
+    except discord.HTTPException as e:
+        return await ctx.send(embed=error_embed("❌ Erreur", f"{e} (image trop lourde ou serveur plein ?)"))
+    await ctx.send(embed=success_embed("✅ Émoji ajouté", f"{emoji} `:{name}:`"))
+
+
 # ========================= HELP DROPDOWN =========================
 
 HELP_CATEGORIES = {
@@ -1561,11 +1973,37 @@ HELP_CATEGORIES = {
             ("unmute @u",                 "Retirer le mute", 2),
             ("warn @u <raison>",          "Avertir", 2),
             ("warns [@u]",                "Voir les warns", 0),
-            ("delwarn <id>",              "Supprimer un warn", 2),
+            ("delwarn <id> / unwarn <id>", "Supprimer un warn", 2),
+            ("clearwarns @u",             "Effacer tous les warns", 2),
+            ("softban @u [raison]",       "Ban + unban (clean messages)", 2),
             ("clear <n>",                 "Supprimer N messages", 2),
             ("lock / unlock [#salon]",    "Verrouiller un salon", 2),
             ("slowmode <sec>",            "Slowmode du salon", 2),
+            ("banlist",                   "Liste des bannis", 2),
+            ("snipe",                     "Dernier message supprimé", 2),
             ("history [@u]",              "Historique sanctions", 2),
+        ],
+    },
+    "infos": {
+        "emoji": "ℹ️", "label": "Infos", "title": "ℹ️  Infos",
+        "items": [
+            ("userinfo [@u]",  "Infos d'un membre", 0),
+            ("serverinfo",     "Infos du serveur", 0),
+            ("avatar [@u]",    "Avatar d'un membre", 0),
+            ("roleinfo @role", "Infos d'un rôle", 0),
+            ("ping",           "Latence du bot", 0),
+        ],
+    },
+    "outils": {
+        "emoji": "🧰", "label": "Outils", "title": "🧰  Outils",
+        "items": [
+            ("role @u @role",          "Ajouter/retirer un rôle", 2),
+            ("nick @u [pseudo]",       "Changer le pseudo (vide = reset)", 2),
+            ("derank @u",              "Retirer tous les rôles", 2),
+            ("say <message>",          "Faire parler le bot", 2),
+            ("dm @u <message>",        "Envoyer un MP", 2),
+            ("embed <message>",        "Envoyer un embed", 2),
+            ("addemoji <nom> <url>",   "Ajouter un émoji", 2),
         ],
     },
     "config": {
@@ -1612,60 +2050,127 @@ def help_category_visible(key, rank):
     return len(help_accessible_items(key, rank)) > 0
 
 
+# Couleur d'accent par catégorie
+CATEGORY_COLORS = {
+    "moderation": 0xed4245,   # rouge
+    "infos":      0x5865f2,   # blurple
+    "outils":     0x1abc9c,   # turquoise
+    "config":     0xfaa61a,   # orange
+    "perms":      0x9b59b6,   # violet
+    "hierarchy":  0xf1c40f,   # or
+}
+
+# Petit sous-titre par catégorie
+CATEGORY_SUBTITLE = {
+    "moderation": "Sanctionne et garde le serveur propre.",
+    "infos":      "Récupère des infos sur les membres, rôles et le serveur.",
+    "outils":     "Gestion des rôles et utilitaires du staff.",
+    "config":     "Configure le bot pour ton serveur.",
+    "perms":      "Gère qui a accès à quoi.",
+    "hierarchy":  "La structure des rangs du bot.",
+}
+
+
+def _bot_avatar():
+    try:
+        return bot.user.display_avatar.url
+    except Exception:
+        return None
+
+
 def build_help_category_embed(key, rank):
     p = get_prefix_cached()
     cat = HELP_CATEGORIES[key]
-    em = discord.Embed(title=cat["title"], color=embed_color())
     items = help_accessible_items(key, rank)
+    color = CATEGORY_COLORS.get(key, COLOR_DEFAULT)
+
+    em = discord.Embed(color=color)
+    em.set_author(name=f"{cat['emoji']}  {cat['label'].upper()}")
+
     if not items:
-        em.description = "*Aucune commande accessible à ton rang.*"
-    else:
-        max_syntax = max(len(f"{p}{syntax}") for syntax, _ in items)
-        lines = [f"{p}{syntax}".ljust(max_syntax + 2) + f"→ {desc}" for syntax, desc in items]
-        em.description = "```\n" + "\n".join(lines) + "\n```"
-    em.set_footer(text=FOOTER_TEXT)
+        em.description = "🔒 *Aucune commande accessible à ton rang dans cette catégorie.*"
+        em.set_footer(text=FOOTER_TEXT)
+        return em
+
+    subtitle = CATEGORY_SUBTITLE.get(key, "")
+    header = f"*{subtitle}*\n　\n" if subtitle else ""
+
+    blocks = []
+    for syntax, desc in items:
+        # commande = 1er mot, le reste = arguments
+        first, _, args = syntax.partition(" ")
+        cmd_line = f"`{p}{first}`"
+        if args:
+            cmd_line += f"  **·**  `{args}`"
+        blocks.append(f"{cmd_line}\n╰─➤ {desc}")
+
+    em.description = header + "\n\n".join(blocks)
+    av = _bot_avatar()
+    if av:
+        em.set_thumbnail(url=av)
+    em.set_footer(text=f"{FOOTER_TEXT} ・ {len(items)} commande(s) ・ {rank_name(rank)}")
     return em
 
 
 def build_help_hierarchy_embed(rank):
-    em = discord.Embed(title="📋  Hiérarchie des rangs", color=embed_color())
-    lines = ["```\nOwner > Sys > WL > Tout le monde\n```\n"]
+    em = discord.Embed(color=CATEGORY_COLORS["hierarchy"])
+    em.set_author(name="📋  HIÉRARCHIE DES RANGS")
+    em.description = (
+        "*Chaque rang hérite des permissions des rangs inférieurs.*\n"
+        "　\n"
+        "👑 **Owner**  ›  🔧 **Sys**  ›  ✨ **WL**  ›  👤 **Membre**"
+    )
     levels = [
-        (3, "👑 **Owner**", "Accès total. `prefix`, `addowner`, `sys`/`unsys`"),
-        (2, "🔧 **Sys**",    "Toute la modération + `allow`, `setlog`, `botban`, `wl`/`unwl`"),
-        (1, "✨ **WL**",     "Statut de confiance (whitelist). Peut utiliser les commandes ouvertes."),
-        (0, "👤 **Tout le monde**", "`warns` et `help` uniquement."),
+        (3, "👑", "Owner",        "Contrôle total du bot.", "`prefix` · `addowner` · `removeowner` · `sys` / `unsys`"),
+        (2, "🔧", "Sys",          "Toute la gestion & modération.", "`ban` · `mute` · `clear` · `role` · `allow` · `setlog` · `botban` · `wl`"),
+        (1, "✨", "WL",           "Membre de confiance (whitelist).", "Peut utiliser les commandes ouvertes partout."),
+        (0, "👤", "Tout le monde", "Accès de base.", "`warns` · `userinfo` · `avatar` · `ping` · `help`"),
     ]
-    for lvl, name, desc in levels:
-        marker = " ← **toi**" if lvl == rank else ""
-        lines.append(f"> {name} — {desc}{marker}")
-    em.description = "\n".join(lines)
+    for lvl, emoji, name, role_desc, perms in levels:
+        toi = "  　🟢 **‹ toi ›**" if lvl == rank else ""
+        em.add_field(
+            name=f"{emoji}  {name}{toi}",
+            value=f"{role_desc}\n╰─➤ {perms}",
+            inline=False,
+        )
+    av = _bot_avatar()
+    if av:
+        em.set_thumbnail(url=av)
     em.set_footer(text=FOOTER_TEXT)
     return em
 
 
 def build_help_home_embed(rank):
     p = get_prefix_cached()
-    em = discord.Embed(color=embed_color())
-    em.set_author(name="Moh ─ Panel d'aide")
-    rank_label = rank_name(rank)
-    intro = (
-        f"```\n🕐  {get_french_time()}\n```\n"
-        f"Bot de gestion : modération + logs.\n\n"
-        f"**Prefix :** `{p}` ・ **Ton rang :** {rank_label}\n\n"
-    )
+    em = discord.Embed(color=COLOR_DEFAULT)
+    em.set_author(name="MOH ─ PANEL D'AIDE")
+    av = _bot_avatar()
+    if av:
+        em.set_thumbnail(url=av)
+
     descs = {
-        "moderation": "Ban, kick, mute, warn, clear, lock...",
-        "config":     "Allow, setlog, prefix",
-        "perms":      "Gérer Owner / Sys / WL, botban",
-        "hierarchy":  "Qui peut faire quoi",
+        "moderation": ("Ban, kick, mute, warn, softban, snipe…", "🔨"),
+        "infos":      ("Userinfo, serverinfo, avatar, ping…", "🔍"),
+        "outils":     ("Rôles, nick, derank, say, dm, embed…", "🧰"),
+        "config":     ("Allow, setlog, prefix…", "⚙️"),
+        "perms":      ("Owner / Sys / WL, botban…", "👥"),
+        "hierarchy":  ("Qui peut faire quoi.", "📋"),
     }
     visible = []
-    for key, lbl in descs.items():
+    for key, (lbl, em_ic) in descs.items():
         if help_category_visible(key, rank):
             cat = HELP_CATEGORIES[key]
-            visible.append(f"> {cat['emoji']} **{cat['label']}** — {lbl}")
-    em.description = intro + ("\n".join(visible) if visible else "")
+            visible.append(f"{cat['emoji']} **{cat['label']}**\n╰─➤ {lbl}")
+
+    intro = (
+        f"Bienvenue sur le panel d'aide de **Moh**.\n"
+        f"Utilise le menu déroulant ci-dessous pour parcourir les catégories.\n"
+        f"　\n"
+        f"🔧 **Prefix** : `{p}`　•　🎖️ **Ton rang** : **{rank_name(rank)}**\n"
+        f"🕐 {get_french_time()}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    em.description = intro + ("\n\n".join(visible) if visible else "*Aucune catégorie disponible.*")
     em.set_footer(text=FOOTER_TEXT)
     return em
 
