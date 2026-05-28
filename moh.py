@@ -27,8 +27,8 @@ if not BOT_TOKEN:
 #  Mets ici autant d'IDs que tu veux.
 # ─────────────────────────────────────────────────────────────────────────
 BUYER_IDS = [
-    625004459491065856,
-    142365250803466240# ← remplace / ajoute tes IDs Buyer ici
+    625004459491065856,   # ← remplace / ajoute tes IDs Buyer ici
+    142365250803466240,
 ]
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
@@ -109,6 +109,7 @@ COMMANDS = {
     "setlog":    {"args": "<type> #salon",          "desc": "Définir un salon de logs",          "cat": "config", "level": 11, "locked": True},
     "dellog":    {"args": "<type>",                 "desc": "Retirer un salon de logs",          "cat": "config", "level": 11, "locked": True},
     "logs":      {"args": "",                       "desc": "Voir la config des logs",           "cat": "config", "level": 11, "locked": True},
+    "renew":     {"args": "",                       "desc": "Recréer le salon (nuke)",           "cat": "config", "level": 12, "locked": True},
 
     # ---- Infos (par défaut public, configurables) ----
     "userinfo":  {"args": "[@u]",                   "desc": "Infos d'un membre",                 "cat": "infos", "level": 0,  "locked": False},
@@ -1195,7 +1196,7 @@ async def _clear(ctx, amount: int = None):
         deleted = await ctx.channel.purge(limit=amount + 1)
     except discord.Forbidden:
         return await ctx.send(embed=error_embed("❌", "Je n'ai pas la permission de supprimer."))
-    msg = await ctx.send(embed=success_embed("🧹 Nettoyage effectué", f"**{len(deleted)-1}** message(s) supprimé(s)."))
+    msg = await ctx.send(f"🧹 **{len(deleted)-1}** message(s) supprimé(s).")
     await asyncio.sleep(5)
     try:
         await msg.delete()
@@ -1854,34 +1855,40 @@ async def _perms(ctx):
 
 @bot.command(name="helpall")
 async def _helpall(ctx):
-    """Quelles commandes dans chaque niveau (filtré à ton niveau)."""
+    """Commandes par niveau, une page par niveau (boutons pour défiler)."""
     viewer = get_user_level(ctx.author)
-    em = discord.Embed(color=0x9b59b6)
-    em.set_author(name="📚  COMMANDES PAR NIVEAU")
-    em.description = f"*Tu vois jusqu'à ton niveau (**{level_name(viewer)}**).*"
-
-    # Regroupe les commandes par niveau effectif
     by_level = {}
-    for name, meta in COMMANDS.items():
+    for name in COMMANDS:
         lvl = get_command_level(ctx.guild.id, name)
         by_level.setdefault(lvl, []).append(name)
 
     order = [LEVEL_BUYER, LEVEL_OWNER, LEVEL_WL] + list(range(MAX_TIER, -1, -1))
+    levels = []
     seen = set()
     for lvl in order:
-        if lvl in seen:
+        if lvl in seen or lvl > viewer:
             continue
         seen.add(lvl)
-        if lvl > viewer:
-            continue
-        cmds = sorted(by_level.get(lvl, []))
-        if not cmds:
-            continue
-        value = " ".join(f"`{c}`" for c in cmds)
-        em.add_field(name=f"{level_emoji(lvl)} {level_name(lvl)}", value=value, inline=False)
+        if by_level.get(lvl):
+            levels.append(lvl)
 
-    em.set_footer(text=FOOTER_TEXT)
-    await ctx.send(embed=em)
+    if not levels:
+        return await ctx.send(embed=info_embed("📚 Commandes", "Aucune commande accessible."))
+
+    pages = []
+    total = len(levels)
+    for i, lvl in enumerate(levels):
+        cmds = sorted(by_level[lvl])
+        em = discord.Embed(color=0x9b59b6)
+        em.set_author(name=f"{level_emoji(lvl)}  {level_name(lvl).upper()}")
+        em.description = " ".join(f"`{get_prefix_cached()}{c}`" for c in cmds)
+        em.set_footer(text=f"{FOOTER_TEXT} ・ {i+1}/{total}")
+        pages.append(em)
+
+    if len(pages) == 1:
+        return await ctx.send(embed=pages[0])
+    view = Paginator(ctx.author.id, pages)
+    await ctx.send(embed=pages[0], view=view)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -1978,6 +1985,27 @@ async def _prefix(ctx, new_prefix: str = None):
     await ctx.send(embed=success_embed("✅ Prefix modifié", f"Nouveau prefix : `{new_prefix}`"))
 
 
+@bot.command(name="renew", aliases=["nuke"])
+async def _renew(ctx):
+    """Recrée le salon à l'identique (Buyer). Pas de confirmation."""
+    channel = ctx.channel
+    try:
+        new_ch = await channel.clone(reason=f"[{ctx.author}] renew")
+        try:
+            await new_ch.edit(position=channel.position)
+        except discord.HTTPException:
+            pass
+        await channel.delete(reason=f"[{ctx.author}] renew")
+    except discord.Forbidden:
+        return await ctx.send(embed=error_embed("❌", "Permission **Gérer les salons** requise."))
+    except discord.HTTPException as e:
+        return await ctx.send(embed=error_embed("❌ Erreur", str(e)))
+    try:
+        await new_ch.send(f"♻️ Salon recréé par {ctx.author.mention}")
+    except discord.HTTPException:
+        pass
+
+
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                  HELP ADAPTÉ AU NIVEAU (dropdown)                        ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
@@ -1990,7 +2018,7 @@ def _bot_avatar():
 
 
 def cat_visible_commands(guild_id, cat, viewer_level):
-    """Commandes d'une catégorie que le viewer peut utiliser, triées par niveau."""
+    """Commandes d'une catégorie utilisables par le viewer, triées par niveau."""
     out = []
     for name, meta in COMMANDS.items():
         if meta["cat"] != cat:
@@ -2006,91 +2034,157 @@ def category_visible(guild_id, cat, viewer_level):
     return len(cat_visible_commands(guild_id, cat, viewer_level)) > 0
 
 
-def build_help_home_embed(guild_id, viewer_level):
+# ---- Paginator générique (boutons ◀ ▶) ----
+
+class Paginator(discord.ui.View):
+    def __init__(self, author_id, pages):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.pages = pages
+        self.index = 0
+        self._sync()
+
+    def _sync(self):
+        self.prev_b.disabled = self.index <= 0
+        self.next_b.disabled = self.index >= len(self.pages) - 1
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Ce menu n'est pas à toi.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(emoji="◀", style=discord.ButtonStyle.secondary)
+    async def prev_b(self, interaction, button):
+        self.index = max(0, self.index - 1)
+        self._sync()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    @discord.ui.button(emoji="▶", style=discord.ButtonStyle.secondary)
+    async def next_b(self, interaction, button):
+        self.index = min(len(self.pages) - 1, self.index + 1)
+        self._sync()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+# ---- Embeds help ----
+
+def build_help_home_embed(viewer_level):
     p = get_prefix_cached()
     em = discord.Embed(color=COLOR_DEFAULT)
-    em.set_author(name="MOH ─ PANEL D'AIDE")
+    em.set_author(name="MOH ─ AIDE")
     av = _bot_avatar()
     if av:
         em.set_thumbnail(url=av)
-    intro = (
-        f"Bienvenue sur le panel d'aide de **Moh**.\n"
-        f"Choisis une catégorie dans le menu déroulant ci-dessous.\n"
-        f"　\n"
-        f"🔧 **Prefix** : `{p}`　•　🎖️ **Ton niveau** : {level_emoji(viewer_level)} **{level_name(viewer_level)}**\n"
-        f"🕐 {get_french_time()}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+    em.description = (
+        f"Choisis une **catégorie** dans le menu ci-dessous.\n\n"
+        f"🔧 Prefix `{p}`　•　🎖️ Niveau : {level_emoji(viewer_level)} **{level_name(viewer_level)}**"
     )
-    blocks = []
-    for cat, meta in CATEGORY_META.items():
-        if category_visible(guild_id, cat, viewer_level):
-            n = len(cat_visible_commands(guild_id, cat, viewer_level))
-            blocks.append(f"{meta['emoji']} **{meta['label']}** ・ *{n} cmd*\n╰─➤ {meta['sub']}")
-    em.description = intro + ("\n\n".join(blocks) if blocks else "*Aucune commande disponible.*")
     em.set_footer(text=FOOTER_TEXT)
     return em
 
 
-def build_help_category_embed(guild_id, cat, viewer_level):
+def build_category_pages(guild_id, cat, viewer_level):
+    """Retourne une liste d'embeds (5 commandes max par page)."""
     p = get_prefix_cached()
     meta = CATEGORY_META[cat]
     items = cat_visible_commands(guild_id, cat, viewer_level)
-    em = discord.Embed(color=meta["color"])
-    em.set_author(name=f"{meta['emoji']}  {meta['label'].upper()}")
-    av = _bot_avatar()
-    if av:
-        em.set_thumbnail(url=av)
     if not items:
-        em.description = "🔒 *Aucune commande accessible à ton niveau ici.*"
+        em = discord.Embed(color=meta["color"], description="🔒 *Aucune commande accessible ici.*")
+        em.set_author(name=f"{meta['emoji']}  {meta['label'].upper()}")
         em.set_footer(text=FOOTER_TEXT)
-        return em
-    header = f"*{meta['sub']}*\n　\n"
-    blocks = []
-    for name, cmeta, lvl in items:
-        args = cmeta["args"]
-        cmd_line = f"`{p}{name}`"
-        if args:
-            cmd_line += f"  **·**  `{args}`"
-        cmd_line += f"  　`{level_name(lvl)}`"
-        blocks.append(f"{cmd_line}\n╰─➤ {cmeta['desc']}")
-    em.description = header + "\n\n".join(blocks)
-    em.set_footer(text=f"{FOOTER_TEXT} ・ {len(items)} commande(s) ・ {level_name(viewer_level)}")
-    return em
+        return [em]
+
+    chunks = [items[i:i + 5] for i in range(0, len(items), 5)]
+    total = len(chunks)
+    pages = []
+    for idx, chunk in enumerate(chunks):
+        blocks = []
+        for name, cmeta, lvl in chunk:
+            line = f"`{p}{name}`"
+            if cmeta["args"]:
+                line += f" `{cmeta['args']}`"
+            line += f"　`{level_name(lvl)}`"
+            blocks.append(f"{line}\n╰─➤ {cmeta['desc']}")
+        em = discord.Embed(color=meta["color"], description="\n\n".join(blocks))
+        em.set_author(name=f"{meta['emoji']}  {meta['label'].upper()}")
+        em.set_footer(text=f"{FOOTER_TEXT} ・ Page {idx+1}/{total}")
+        pages.append(em)
+    return pages
 
 
-class HelpDropdown(discord.ui.Select):
-    def __init__(self, guild_id, viewer_level):
-        self.guild_id = guild_id
-        self.viewer_level = viewer_level
+# ---- Vue help : dropdown (catégories) + boutons de pagination ----
+
+class HelpSelect(discord.ui.Select):
+    def __init__(self, parent):
+        self.parent_view = parent
         options = [discord.SelectOption(label="Accueil", emoji="🏠", value="home")]
         for cat, meta in CATEGORY_META.items():
-            if category_visible(guild_id, cat, viewer_level):
+            if category_visible(parent.guild_id, cat, parent.viewer_level):
                 options.append(discord.SelectOption(label=meta["label"], emoji=meta["emoji"], value=cat))
-        super().__init__(placeholder="📂 Choisis une catégorie...", min_values=1, max_values=1, options=options[:25])
+        super().__init__(placeholder="📂 Choisis une catégorie...", min_values=1, max_values=1,
+                         options=options[:25], row=0)
 
     async def callback(self, interaction):
-        key = self.values[0]
-        if key == "home":
-            em = build_help_home_embed(self.guild_id, self.viewer_level)
-        elif key in CATEGORY_META and category_visible(self.guild_id, key, self.viewer_level):
-            em = build_help_category_embed(self.guild_id, key, self.viewer_level)
+        v = self.parent_view
+        val = self.values[0]
+        if val == "home":
+            v.current_cat = None
+            v.page = 0
+            v.pages = []
         else:
-            return await interaction.response.send_message("Catégorie inaccessible.", ephemeral=True)
-        await interaction.response.edit_message(embed=em, view=self.view)
+            v.current_cat = val
+            v.page = 0
+            v.pages = build_category_pages(v.guild_id, val, v.viewer_level)
+        v.sync()
+        await interaction.response.edit_message(embed=v.current_embed(), view=v)
 
 
 class HelpView(discord.ui.View):
     def __init__(self, author_id, guild_id, viewer_level):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.author_id = author_id
-        self.add_item(HelpDropdown(guild_id, viewer_level))
+        self.guild_id = guild_id
+        self.viewer_level = viewer_level
+        self.current_cat = None
+        self.page = 0
+        self.pages = []
+        self.add_item(HelpSelect(self))
+        self.sync()
+
+    def current_embed(self):
+        if self.current_cat is None or not self.pages:
+            return build_help_home_embed(self.viewer_level)
+        self.page = max(0, min(self.page, len(self.pages) - 1))
+        return self.pages[self.page]
+
+    def sync(self):
+        multi = self.current_cat is not None and len(self.pages) > 1
+        self.prev_b.disabled = (not multi) or self.page <= 0
+        self.next_b.disabled = (not multi) or self.page >= len(self.pages) - 1
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.author_id:
             await interaction.response.send_message(
-                f"Ce menu n'est pas à toi. Fais `{get_prefix_cached()}help` pour le tien.", ephemeral=True)
+                f"Ce menu n'est pas à toi. Fais `{get_prefix_cached()}help`.", ephemeral=True)
             return False
         return True
+
+    @discord.ui.button(emoji="◀", style=discord.ButtonStyle.secondary, row=1)
+    async def prev_b(self, interaction, button):
+        self.page = max(0, self.page - 1)
+        self.sync()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    @discord.ui.button(emoji="▶", style=discord.ButtonStyle.secondary, row=1)
+    async def next_b(self, interaction, button):
+        self.page = min(len(self.pages) - 1, self.page + 1)
+        self.sync()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
 
     async def on_timeout(self):
         for item in self.children:
@@ -2101,7 +2195,7 @@ class HelpView(discord.ui.View):
 async def _help(ctx):
     level = get_user_level(ctx.author)
     view = HelpView(ctx.author.id, ctx.guild.id, level)
-    await ctx.send(embed=build_help_home_embed(ctx.guild.id, level), view=view)
+    await ctx.send(embed=build_help_home_embed(level), view=view)
 
 
 # ========================= RUN =========================
