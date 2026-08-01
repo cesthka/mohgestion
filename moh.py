@@ -26,9 +26,8 @@ if not BOT_TOKEN:
 #  BUYER : hardcodé, niveau max, ne peut PAS être set/retiré en commande.
 #  Mets ici autant d'IDs que tu veux.
 # ─────────────────────────────────────────────────────────────────────────
-BUYER_IDS = [
-    625004459491065856,   # ← remplace / ajoute tes IDs Buyer ici
-    142365250803466240,
+BUYER_IDS = [   # ← remplace / ajoute tes IDs Buyer ici
+    142365250803466240
 ]
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
