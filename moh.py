@@ -27,7 +27,8 @@ if not BOT_TOKEN:
 #  Mets ici autant d'IDs que tu veux.
 # ─────────────────────────────────────────────────────────────────────────
 BUYER_IDS = [   # ← remplace / ajoute tes IDs Buyer ici
-    142365250803466240
+    142365250803466240,
+    1546586066407133308
 ]
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
